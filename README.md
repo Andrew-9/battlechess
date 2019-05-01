@@ -8,8 +8,21 @@ Currently, the engine makes random moves. Fork this, modify get_move in engine.p
 
 The idea isn't to modify stockfish, it's to write clever short python algorithms. Will add checks for running time and code shortness soon. And if there's cheating, I'll add a sandbox. If you want to use a Python library, send a pull request to modify requirements.txt and we can discuss if it's fair.
 
-UPDATE: You have at most 100ms to make your move. Go over, and you forfeit the match.
+<pre>
+# Play vs your engine in a GUI
+cd gui; ./gui.py
 
-UPDATE: seccomp sandbox will be added, do not use fork, exec, the internet, or the filesystem.
+# Run a tournament
+./play.py
 
+# Run a battle (geohot vs geohot)
+DEBUG=1 ./play.py geohot geohot
+
+# Launch your engine in Docker (quit to quit)
+./launch.sh geohot
+</pre>
+
+UPDATE: You have at most 500ms to make your move. Go over, and you forfeit the match.
+
+UPDATE: seccomp sandbox will be added, do not use exec, the internet, or the filesystem.
 

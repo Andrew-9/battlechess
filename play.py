@@ -1,56 +1,112 @@
 #!/usr/bin/env python3
+import os
+import sys
 import asyncio
 import time
 import chess
 import chess.engine
 import requests
 import traceback
+import subprocess
+from datetime import datetime
 from collections import defaultdict
+
+DEBUG = os.getenv("DEBUG", None) is not None
+
+if not DEBUG:
+  import logging
+  logging.basicConfig(level=logging.ERROR)
+
+async def open_engine(engine_path):
+  try:
+    if DEBUG:
+      transport, engine = await chess.engine.popen_uci(engine_path)
+    else:
+      transport, engine = await asyncio.wait_for(chess.engine.popen_uci(engine_path, stderr=subprocess.DEVNULL), 30.0)
+    return engine
+  except chess.engine.EngineTerminatedError:
+    print("engine startup failed")
+  except asyncio.TimeoutError:
+    print("engine startup took longer than 30s")
+  except Exception:
+    traceback.print_exc()
+  return None
 
 async def play_handler(engine, board):
   try:
-    # 100ms max
-    result = await asyncio.wait_for(engine.play(board, chess.engine.Limit(time=0.01)), 0.1)
+    # 500ms max
+    result = await asyncio.wait_for(engine.play(board, chess.engine.Limit(time=0.5)), 0.5)
     return result
+  except asyncio.TimeoutError:
+    print("engine move took longer than 500ms")
+  except chess.engine.EngineTerminatedError:
+    print("engine process died unexpectedly")
   except Exception:
     traceback.print_exc()
-    return None
+  return None
 
 # battle two github users
 async def battle(user1, user2):
-  print("battle %s %s" % (user1, user2))
-  engine1_path = ["./launch.sh", user1]
-  engine2_path = ["./launch.sh", user2]
+  print("\n************* battle %s %s *************" % (user1, user2))
+  engine1 = await open_engine(["./launch.sh", user1])
+  engine2 = await open_engine(["./launch.sh", user2])
 
-  transport, engine1 = await chess.engine.popen_uci(engine1_path)
-  transport, engine2 = await chess.engine.popen_uci(engine2_path)
-
-  board = chess.Board()
+  # check if engines didn't boot
   outcome = None
-  while not board.is_game_over():
-    #print("***** move %d turn %d *****" % (board.fullmove_number, board.turn))
-    #print(board)
-    if board.turn:
-      # white
-      result = await play_handler(engine1, board)
-      if result is None:
-        print("%s(white) forfeits" % user1)
-        outcome = "0-1"
-        break
-    else:
-      # black
-      result = await play_handler(engine2, board)
-      if result is None:
-        print("%s(black) forfeits" % user2)
-        outcome = "1-0"
-        break
-    board.push(result.move)
+  if engine1 is None and engine2 is None:
+    outcome = "1/2-1/2"
+  elif engine1 is None:
+    outcome = "0-1"
+  elif engine2 is None:
+    outcome = "1-0"
 
-  await engine1.quit()
-  await engine2.quit()
+  if outcome is None:
+    board = chess.Board()
+    while not board.is_game_over():
+      #print("***** move %d turn %d *****" % (board.fullmove_number, board.turn))
+      #print(board)
+      if board.turn:
+        # white
+        result = await play_handler(engine1, board)
+        if result is None:
+          print("%s(white) forfeits" % user1)
+          outcome = "0-1"
+          break
+      else:
+        # black
+        result = await play_handler(engine2, board)
+        if result is None:
+          print("%s(black) forfeits" % user2)
+          outcome = "1-0"
+          break
+      board.push(result.move)
 
-  print(board)
-  return outcome if outcome is not None else board.result()
+  if engine1 is not None:
+    await engine1.quit()
+  if engine2 is not None:
+    await engine2.quit()
+
+  if outcome is None:
+    print(board)
+    if board.is_seventyfive_moves():
+      print("seventy-five move rule")
+    if board.is_insufficient_material():
+      print("insufficient material")
+    if not any(board.generate_legal_moves()):
+      if board.result() == "1/2-1/2":
+        print("stalemate")
+      else:
+        print("checkmate")
+    if board.is_fivefold_repetition():
+      print("fivefold repetition")
+    result = board.result()
+  else:
+    result = outcome
+
+  # print outcome of match
+  print("result of %s vs %s is %s" % (user1, user2, result))
+
+  return result
 
 async def main():
   forks = ["geohot"]
@@ -66,16 +122,19 @@ async def main():
     raise Exception("fetch forks failed")
   dat = r.json()
   # filter stupid forks that didn't change anything
-  blacklisted_times = ["2019-04-20T00:56:04Z"]
-  forks += [arr['full_name'].replace("/battlechess", "") for arr in dat if arr['pushed_at'] not in blacklisted_times]
+  def format_time(x):
+    return datetime.strptime(x, "%Y-%m-%dT%H:%M:%SZ")
+  earliest_time = format_time("2019-04-26T00:00:00Z")
+  forks += [arr['full_name'].replace("/battlechess", "") for arr in dat \
+    if format_time(arr['pushed_at']) > earliest_time]
   print("battling", forks)
+
   score = defaultdict(int)
   # TODO: not n^2 tournament, double elimination?
   for u1 in forks:
     for u2 in forks:
       if u1 != u2:
         result = await battle(u1, u2)
-        print("result of %s vs %s is %s" % (u1, u2, result))
         if result == '1-0':
           score[u1] += 2
           score[u2] += 0
@@ -92,5 +151,9 @@ async def main():
 if __name__ == "__main__":
   asyncio.set_event_loop_policy(chess.engine.EventLoopPolicy())
   loop = asyncio.get_event_loop()
-  result = loop.run_until_complete(main())
+
+  if len(sys.argv) == 3:
+    loop.run_until_complete(battle(sys.argv[1], sys.argv[2]))
+  else:
+    loop.run_until_complete(main())
 
